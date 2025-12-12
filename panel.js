@@ -3,318 +3,217 @@ import OBR from "https://cdn.skypack.dev/@owlbear-rodeo/sdk";
 const ID = "dev.hex-explorer";
 const NS = `${ID}/meta`;
 
-const $ = sel => document.querySelector(sel);
-const log = msg => {
-  const el = document.createElement("div");
-  el.textContent = msg;
-  document.getElementById("log")?.appendChild(el);
+const HEX_SIZE = 128;              // единый размер токена-гекса
+const ORIENT = "pointy";           // острый верх
+const SNAP_RADIUS = HEX_SIZE * 0.6;// зона прилипания вокруг центров слотов
+
+// вспомогалки
+const round = n => Math.round(n * 1000) / 1000;
+const toPx = (q, r) => {
+  // axial q,r -> pixel x,y для pointy
+  const x = HEX_SIZE * (Math.sqrt(3) * (q + r / 2));
+  const y = HEX_SIZE * (3 / 2 * r);
+  return { x, y };
 };
+const toAxial = (x, y) => {
+  // pixel x,y -> axial q,r для pointy
+  const q = (Math.sqrt(3) / 3 * x - 1 / 3 * y) / (HEX_SIZE / 1);
+  const r = (2 / 3 * y) / (HEX_SIZE / 1);
+  return cubeRound(q, r);
+};
+function cubeRound(q, r) {
+  // округление к ближайшей гекс-ячейке
+  let x = q;
+  let z = r;
+  let y = -x - z;
+  let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
+  const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
+  if (dx > dy && dx > dz) rx = -ry - rz;
+  else if (dy > dz) ry = -rx - rz;
+  else rz = -rx - ry;
+  return { q: rx, r: rz };
+}
 
 OBR.onReady(async () => {
-  const params = new URLSearchParams(location.search);
-  const hexId = params.get("hex");
+  // контекстное меню: старт/финиш режима
+  OBR.contextMenu.create({
+    id: `${ID}/start`,
+    icons: [{ icon: "M4 4h16v16H4z", label: "Создать карту" }],
+    filter: { items: { every: [{ type: "IMAGE" }] } },
+    onClick: async (ctx) => startBuildMode(ctx.items[0].id)
+  });
 
-  // Попап конкретного гекса
-  if (hexId) {
-    await renderHexPopover(hexId);
-    return;
-  }
+  OBR.contextMenu.create({
+    id: `${ID}/finish`,
+    icons: [{ icon: "M5 13h14v-2H5z", label: "Закончить карту" }],
+    filter: { items: { every: [] } },
+    onClick: async () => stopBuildMode()
+  });
 
-  // Главная панель
-  await renderMainPanel();
+  // перехват добавления новых токенов в режиме сборки
+  OBR.scene.items.onChange(async (changes) => {
+    const build = await OBR.scene.getMetadata(NS + "/build");
+    if (!build?.active) return;
 
-  // Обработчики на сцене
-  activateMapHandlers();
+    // интересуют только новые IMAGE
+    const created = changes?.created || [];
+    if (created.length === 0) return;
 
-  // Активировать снэпинг для ассетов
-  activateSnapHandler();
+    const items = await OBR.scene.items.getItems(created.map(c => c.id));
+    const imgs = items.filter(i => i.type === "IMAGE");
+
+    if (imgs.length === 0) return;
+
+    for (const it of imgs) {
+      await snapImageToGrid(it, build);
+      await openStatePopover(it.id); // окно выбора: Видимая, Соседняя, Туман
+    }
+  });
 });
 
-/* ===========================
-   Основная панель
-   =========================== */
-async function renderMainPanel() {
-  const sizeInput = $("#hexSize");
-  const btnGrid = $("#btnMakeGrid");
-  const btnAsset = $("#btnSelectAsset");
-  const search = $("#search");
-  const btnSearch = $("#btnSearch");
+async function startBuildMode(seedId) {
+  const [seed] = await OBR.scene.items.getItems([seedId]);
+  if (!seed) return;
 
-  // 1) Генерация сетки
-  btnGrid.onclick = async () => {
-    const size = Math.max(20, Math.min(400, Number(sizeInput.value) || 128));
-    const center = await OBR.viewport.getCenter();
-    const cols = 10, rows = 8;
-    const items = [];
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const offsetX = c * size * 0.9;
-        const offsetY = r * size * 0.78 + (c % 2 ? size * 0.39 : 0);
-        items.push(makeHexImage({ x: center.x + offsetX, y: center.y + offsetY }, size));
-      }
-    }
-
-    await OBR.scene.items.addItems(items);
-    log(`Добавлено ${items.length} гексов.`);
-  };
-
-  // 2) Назначение арта из ассетов OBR
-  btnAsset.onclick = async () => {
-    const imgs = await OBR.assets.open({ accept: ["image/*"], multiple: false });
-    if (!imgs || imgs.length === 0) return;
-    const url = imgs[0].url;
-
-    const selected = await OBR.scene.items.getSelection();
-    if (selected.length === 0) {
-      log("Выдели один или несколько гексов.");
-      return;
-    }
-
-    await OBR.scene.items.updateItems(selected, items => {
-      for (const it of items) {
-        if (it.type !== "IMAGE") continue;
-        const m = it.metadata[NS] || {};
-        if (m.type !== "hex") continue;
-        it.image = { url };
-      }
-    });
-
-    log("Арт назначен.");
-  };
-
-  // 3) Поиск по описанию и заметкам
-  btnSearch.onclick = async () => {
-    const q = (search.value || "").trim().toLowerCase();
-    if (!q) return;
-
-    const items = await OBR.scene.items.getItems(i => i.metadata[NS]?.type === "hex");
-
-    const hits = items.filter(it => {
-      const m = it.metadata[NS] || {};
-      const t = `${m.title || ""}\n${m.desc || ""}\n${m.notesPublic || ""}\n${m.notesPrivate || ""}`.toLowerCase();
-      return t.includes(q);
-    });
-
-    await OBR.scene.local.addItems(hits.map(h => highlightRing(h)));
-    log(`Найдено гексов: ${hits.length}`);
-
-    setTimeout(() => OBR.scene.local.deleteItems(i => true), 2000);
-  };
-}
-
-/* ===========================
-   Вспомогательные функции
-   =========================== */
-function makeHexImage(pos, size) {
-  return {
-    type: "IMAGE",
-    name: "Hex",
-    layer: "MAP",
-    position: pos,
-    width: size,
-    height: size,
-    image: { url: "./hex-placeholder.png" }, // относительный путь для GitHub Pages
-    metadata: { [NS]: { type: "hex", state: "closed", hexSize: size } },
-    disableHit: true,
-    opacity: 0.1
-  };
-}
-
-function highlightRing(item) {
-  const s = Math.max(item.width, item.height) + 6;
-  return {
-    type: "SHAPE",
-    layer: "LOCAL",
-    position: item.position,
-    width: s,
-    height: s,
-    shapeType: "HEXAGON",
-    style: {
-      fillColor: "rgba(0,0,0,0)",
-      strokeColor: "#f59e0b",
-      strokeWidth: 3
-    }
-  };
-}
-
-/* ===========================
-   Попап информации о гексе
-   =========================== */
-async function renderHexPopover(hexId) {
-  const [hex] = await OBR.scene.items.getItems([hexId]);
-  if (!hex) return;
-
-  const meta = hex.metadata[NS] || {};
-
-  const container = document.createElement("div");
-  container.style.padding = "8px";
-  container.innerHTML = `
-    <div class="row"><input id="title" placeholder="заголовок" value="${escapeHtml(meta.title || "")}"></div>
-    <div class="row"><textarea id="desc" rows="4" placeholder="описание мастера">${escapeHtml(meta.desc || "")}</textarea></div>
-    <div class="row"><textarea id="notesPrivate" rows="3" placeholder="личные заметки (локально)">${escapeHtml(meta.notesPrivate || "")}</textarea></div>
-    <div class="row"><textarea id="notesPublic" rows="3" placeholder="общие заметки (видят все)">${escapeHtml(meta.notesPublic || "")}</textarea></div>
-    <div class="row"><button id="save">Сохранить</button></div>
-  `;
-
-  document.body.appendChild(container);
-
-  document.getElementById("save").onclick = async () => {
-    const title = document.getElementById("title").value;
-    const desc = document.getElementById("desc").value;
-    const notesPublic = document.getElementById("notesPublic").value;
-    const notesPrivate = document.getElementById("notesPrivate").value;
-
-    await OBR.scene.items.updateItems([hexId], items => {
-      const it = items[0];
-      const m = it.metadata[NS] || {};
-      m.title = title;
-      m.desc = desc;
-      m.notesPublic = notesPublic;
-      m.notesPrivate = notesPrivate;
-      it.metadata[NS] = m;
-    });
-
-    await OBR.popover.close(`${ID}/hexinfo`);
-  };
-}
-
-function escapeHtml(s) {
-  return s.replace(/[&<>"]+/g, c => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;"
-  }[c]));
-}
-
-/* ===========================
-   Обработчики событий карты
-   =========================== */
-function activateMapHandlers() {
-  // Клик по гексу — открыть. Shift+клик — открыть попап.
-  OBR.interaction.onClick(async ctx => {
-    if (!ctx.target || ctx.target.type !== "IMAGE") return;
-
-    const [item] = await OBR.scene.items.getItems([ctx.target.id]);
-    if (!item) return;
-
-    const meta = item.metadata[NS] || {};
-    if (meta.type !== "hex") return;
-
-    await openHex(item);
-
-    if (ctx.modifierKeys.shiftKey) {
-      await openInfoPopover(item);
-    }
-  });
-}
-
-/* ===========================
-   Открытие гекса и соседей
-   =========================== */
-async function openHex(item) {
-  await OBR.scene.items.updateItems([item.id], items => {
+  // нормализуем исходный гекс
+  await OBR.scene.items.updateItems([seedId], items => {
     const it = items[0];
+    it.width = HEX_SIZE;
+    it.height = HEX_SIZE;
+    it.metadata[NS] = { ...(it.metadata[NS] || {}), type: "hex", q: 0, r: 0, state: "visible" };
+  });
+
+  // запоминаем якорь и систему координат
+  await OBR.scene.setMetadata(NS + "/build", {
+    active: true,
+    origin: { x: seed.position.x, y: seed.position.y },
+    orient: ORIENT,
+    size: HEX_SIZE
+  });
+
+  // локальный превью-лупа вокруг соседних слотов
+  await drawNeighborPreview(seed.position, HEX_SIZE);
+}
+
+async function stopBuildMode() {
+  await OBR.scene.setMetadata(NS + "/build", { active: false });
+  await OBR.scene.local.deleteItems(i => true);
+}
+
+// снап и унификация размеров + прилипание к ближайшей ячейке
+async function snapImageToGrid(img, build) {
+  // переводим мировые координаты в осевые q,r относительно origin
+  const dx = img.position.x - build.origin.x;
+  const dy = img.position.y - build.origin.y;
+  const { q, r } = toAxial(dx, dy);
+
+  // итоговый центр ячейки
+  const p = toPx(q, r);
+  const pos = { x: round(build.origin.x + p.x), y: round(build.origin.y + p.y) };
+
+  // если слишком далеко от центра ячейки, не трогаем
+  const dist = Math.hypot(img.position.x - pos.x, img.position.y - pos.y);
+  if (dist > SNAP_RADIUS) return;
+
+  // анимированный док
+  await OBR.scene.items.updateItems([img.id], items => {
+    const it = items[0];
+    it.position = pos;
+    it.width = build.size;
+    it.height = build.size;
     const m = it.metadata[NS] || {};
-    m.state = "open";
-    it.metadata[NS] = m;
-    it.opacity = 1;
-    it.disableHit = false;
+    it.metadata[NS] = { ...m, type: "hex", q, r, state: "adjacent" }; // по умолчанию «Соседняя»
+    it.opacity = 0.85;
   });
 
-  const meta = item.metadata[NS] || {};
-  if (meta.noSpread) return;
-
-  const neighbors = await getNeighbors(item, meta.hexSize || 128);
-
-  await OBR.scene.items.updateItems(neighbors.map(n => n.id), items => {
-    for (const it of items) {
-      const m = it.metadata[NS] || {};
-      if (m.state !== "open") m.state = "adjacent";
-      it.metadata[NS] = m;
-      it.opacity = m.state === "open" ? 1 : 0.35;
-      it.disableHit = false;
-    }
-  });
+  // перерисовать предпросмотр соседей вокруг поставленного гекса
+  await drawNeighborPreview(pos, build.size);
 }
 
-async function getNeighbors(item, size) {
-  const all = await OBR.scene.items.getItems(i => i.metadata[NS]?.type === "hex");
-  const range = size * 1.05;
-  const c = item.position;
-
-  return all.filter(it => it.id !== item.id && distance(it.position, c) < range + 1);
+// локальный превью шести соседей
+async function drawNeighborPreview(center, size) {
+  await OBR.scene.local.deleteItems(i => true);
+  const slot = await OBR.scene.local.addItems(neighborRings(center, size));
+  return slot;
+}
+function neighborRings(center, size) {
+  const pts = [];
+  const dirs = [
+    { q: +1, r: 0 }, { q: +1, r: -1 }, { q: 0, r: -1 },
+    { q: -1, r: 0 }, { q: -1, r: +1 }, { q: 0, r: +1 }
+  ];
+  for (const d of dirs) {
+    const p = toPx(d.q, d.r);
+    pts.push({
+      type: "SHAPE",
+      layer: "LOCAL",
+      position: { x: center.x + p.x, y: center.y + p.y },
+      width: size,
+      height: size,
+      shapeType: "HEXAGON",
+      style: { fillColor: "rgba(0,0,0,0)", strokeColor: "#10b981", strokeWidth: 2 }
+    });
+  }
+  return pts;
 }
 
-function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-/* ===========================
-   Попап из панели
-   =========================== */
-async function openInfoPopover(item) {
-  const url = new URL(location.href);
-  url.searchParams.set("hex", item.id);
+// поповер выбора состояния
+async function openStatePopover(itemId) {
+  const html = `
+    <style>
+      body{margin:0;padding:10px;font:13px system-ui}
+      .row{display:flex;gap:8px}
+      button{padding:6px 10px;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer}
+    </style>
+    <div class="row">
+      <button data-s="visible">Видимая</button>
+      <button data-s="adjacent">Соседняя</button>
+      <button data-s="fog">Туман</button>
+    </div>
+  `;
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
 
   await OBR.popover.open({
-    id: `${ID}/hexinfo`,
-    url: url.toString(),
-    height: 420,
-    width: 360,
-    anchorElementId: item.id
+    id: `${ID}/state-${itemId}`,
+    url,
+    width: 260,
+    height: 70,
+    anchorElementId: itemId
+  });
+
+  // ловим клики внутри поповера
+  OBR.popover.onMessage(`${ID}/state-${itemId}`, async (msg) => {
+    if (!msg?.state) return;
+    await setHexState(itemId, msg.state);
+    await OBR.popover.close(`${ID}/state-${itemId}`);
+  });
+
+  // внедрить небольшой скрипт-почтальон внутрь поповера
+  setTimeout(() => {
+    // отправка сообщений наружу
+    const script = `
+      window.addEventListener('click', (e) => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        const state = b.dataset.s;
+        parent.postMessage({ target:'${ID}/state-${itemId}', state }, '*');
+      });
+    `;
+    // eslint-disable-next-line no-undef
+    OBR.popover.eval(`${ID}/state-${itemId}`, script);
+  }, 50);
+}
+
+async function setHexState(itemId, state) {
+  await OBR.scene.items.updateItems([itemId], items => {
+    const it = items[0];
+    const m = it.metadata[NS] || {};
+    m.state = state;
+    it.metadata[NS] = m;
+
+    if (state === "visible") { it.opacity = 1; it.disableHit = false; }
+    else if (state === "adjacent") { it.opacity = 0.6; it.disableHit = false; }
+    else { it.opacity = 0.05; it.disableHit = true; } // туман
   });
 }
-
-/* ===========================
-   Снэпинг ассетов к предметам
-   =========================== */
-const SNAP_DISTANCE = 30;
-
-function activateSnapHandler() {
-  OBR.interaction.onDrop(async (dropEvent) => {
-    // Get all scene items
-    const allItems = await OBR.scene.items.getItems();
-    
-    // Find nearest item within snap distance
-    let nearest = null;
-    let minDist = SNAP_DISTANCE;
-
-    for (const item of allItems) {
-      const dist = distance(item.position, dropEvent.position);
-      if (dist < minDist) {
-        minDist = dist;
-        nearest = item;
-      }
-    }
-
-    // If found nearby item, snap to its edge
-    if (nearest) {
-      const snappedPos = calculateSnapPosition(dropEvent.position, nearest);
-      dropEvent.position = snappedPos;
-    }
-  });
-}
-
-function calculateSnapPosition(dropPos, targetItem) {
-  const dx = dropPos.x - targetItem.position.x;
-  const dy = dropPos.y - targetItem.position.y;
-  
-  // Simple edge snapping: align to nearest edge
-  const width = targetItem.width || 128;
-  const height = targetItem.height || 128;
-  
-  let snappedX = dropPos.x;
-  let snappedY = dropPos.y;
-
-  // Snap horizontally or vertically based on which axis is closer
-  if (Math.abs(dx) < Math.abs(dy)) {
-    snappedX = targetItem.position.x + (dx > 0 ? width / 2 : -width / 2);
-  } else {
-    snappedY = targetItem.position.y + (dy > 0 ? height / 2 : -height / 2);
-  }
-
-  return { x: snappedX, y: snappedY };
-}
-
