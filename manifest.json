@@ -1,13 +1,12 @@
 {
-"name": "Hex Explorer",
-"version": "0.1.0",
-"manifest_version": 1,
-"action": {
-"title": "Hex Explorer",
-"icon": "/icon.svg",
-"popover": "/panel.html",
-"width": 360,
-"height": 520
-},
-"background": "/obr.js"
+  "name": "Hex Explorer",
+  "version": "0.1.0",
+  "manifest_version": 1,
+  "action": {
+    "title": "Hex Explorer",
+    "icon": "/icon.svg",
+    "popover": "/panel.html",
+    "width": 360,
+    "height": 520
+  }
 }
