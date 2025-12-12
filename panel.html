@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Hex Explorer</title>
+<link rel="stylesheet" href="/styles.css"/>
+</head>
+<body>
+<header>
+<h1>Hex Explorer</h1>
+<div class="row">
+<label>Размер гекса, px <input id="hexSize" type="number" min="20" max="400" value="128"></label>
+</div>
+<div class="row">
+<button id="btnMakeGrid">Сгенерировать сетку</button>
+<button id="btnSelectAsset">Назначить арт</button>
+</div>
+<div class="row">
+<input id="search" placeholder="поиск по описанию и заметкам"/>
+<button id="btnSearch">Искать</button>
+</div>
+<p class="hint">Клик по гексу открывает, Alt+клик ставит золотой пин, Shift удерживай чтобы закрепить попап.</p>
+</header>
+
+
+<section id="log"></section>
+
+
+<script type="module" src="/panel.js"></script>
+</body>
+</html>
