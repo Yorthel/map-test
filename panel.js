@@ -25,6 +25,9 @@ OBR.onReady(async () => {
 
   // Обработчики на сцене
   activateMapHandlers();
+
+  // Активировать снэпинг для ассетов
+  activateSnapHandler();
 });
 
 /* ===========================
@@ -263,3 +266,55 @@ async function openInfoPopover(item) {
     anchorElementId: item.id
   });
 }
+
+/* ===========================
+   Снэпинг ассетов к предметам
+   =========================== */
+const SNAP_DISTANCE = 30;
+
+function activateSnapHandler() {
+  OBR.interaction.onDrop(async (dropEvent) => {
+    // Get all scene items
+    const allItems = await OBR.scene.items.getItems();
+    
+    // Find nearest item within snap distance
+    let nearest = null;
+    let minDist = SNAP_DISTANCE;
+
+    for (const item of allItems) {
+      const dist = distance(item.position, dropEvent.position);
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = item;
+      }
+    }
+
+    // If found nearby item, snap to its edge
+    if (nearest) {
+      const snappedPos = calculateSnapPosition(dropEvent.position, nearest);
+      dropEvent.position = snappedPos;
+    }
+  });
+}
+
+function calculateSnapPosition(dropPos, targetItem) {
+  const dx = dropPos.x - targetItem.position.x;
+  const dy = dropPos.y - targetItem.position.y;
+  
+  // Simple edge snapping: align to nearest edge
+  const width = targetItem.width || 128;
+  const height = targetItem.height || 128;
+  
+  let snappedX = dropPos.x;
+  let snappedY = dropPos.y;
+
+  // Snap horizontally or vertically based on which axis is closer
+  if (Math.abs(dx) < Math.abs(dy)) {
+    snappedX = targetItem.position.x + (dx > 0 ? width / 2 : -width / 2);
+  } else {
+    snappedY = targetItem.position.y + (dy > 0 ? height / 2 : -height / 2);
+  }
+
+  return { x: snappedX, y: snappedY };
+}
+
