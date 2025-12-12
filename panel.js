@@ -14,16 +14,16 @@ OBR.onReady(async () => {
   const params = new URLSearchParams(location.search);
   const hexId = params.get("hex");
 
-  // Если это попап информации для конкретного гекса
+  // Попап конкретного гекса
   if (hexId) {
     await renderHexPopover(hexId);
     return;
   }
 
-  // Если это главная панель расширения
+  // Главная панель
   await renderMainPanel();
 
-  // Активируем обработчики событий карты
+  // Обработчики на сцене
   activateMapHandlers();
 });
 
@@ -37,7 +37,7 @@ async function renderMainPanel() {
   const search = $("#search");
   const btnSearch = $("#btnSearch");
 
-  // 1. Генерация сетки
+  // 1) Генерация сетки
   btnGrid.onclick = async () => {
     const size = Math.max(20, Math.min(400, Number(sizeInput.value) || 128));
     const center = await OBR.viewport.getCenter();
@@ -56,7 +56,7 @@ async function renderMainPanel() {
     log(`Добавлено ${items.length} гексов.`);
   };
 
-  // 2. Назначение арта из ассетов OBR
+  // 2) Назначение арта из ассетов OBR
   btnAsset.onclick = async () => {
     const imgs = await OBR.assets.open({ accept: ["image/*"], multiple: false });
     if (!imgs || imgs.length === 0) return;
@@ -80,7 +80,7 @@ async function renderMainPanel() {
     log("Арт назначен.");
   };
 
-  // 3. Поиск по описанию и заметкам
+  // 3) Поиск по описанию и заметкам
   btnSearch.onclick = async () => {
     const q = (search.value || "").trim().toLowerCase();
     if (!q) return;
@@ -89,8 +89,7 @@ async function renderMainPanel() {
 
     const hits = items.filter(it => {
       const m = it.metadata[NS] || {};
-      const t = `${m.title || ""}\n${m.desc || ""}\n${m.notesPublic || ""}\n${m.notesPrivate || ""}`
-        .toLowerCase();
+      const t = `${m.title || ""}\n${m.desc || ""}\n${m.notesPublic || ""}\n${m.notesPrivate || ""}`.toLowerCase();
       return t.includes(q);
     });
 
@@ -112,7 +111,7 @@ function makeHexImage(pos, size) {
     position: pos,
     width: size,
     height: size,
-    image: { url: "/hex-placeholder.png" },
+    image: { url: "./hex-placeholder.png" }, // относительный путь для GitHub Pages
     metadata: { [NS]: { type: "hex", state: "closed", hexSize: size } },
     disableHit: true,
     opacity: 0.1
@@ -190,8 +189,7 @@ function escapeHtml(s) {
    Обработчики событий карты
    =========================== */
 function activateMapHandlers() {
-
-  // Клик по гексу — открыть
+  // Клик по гексу — открыть. Shift+клик — открыть попап.
   OBR.interaction.onClick(async ctx => {
     if (!ctx.target || ctx.target.type !== "IMAGE") return;
 
